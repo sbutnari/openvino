@@ -370,5 +370,6 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    std::cout << "Success, exiting" << std::endl;
     return EXIT_SUCCESS;
 }
