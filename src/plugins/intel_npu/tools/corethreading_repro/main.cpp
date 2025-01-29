@@ -310,33 +310,35 @@ void CoreThreadingTestsWithIter_AsyncInfer_ShareInput () {
 
     for (auto& thread : threads) {
         thread = std::thread([&]() {
-            //creating new core at each iteration!
-            ov::Core core;
-            core.set_property(ov::enable_profiling(false));
+            for (unsigned int i = 0; i < iterations; ++i) {
+                //creating new core at each iteration!
+                ov::Core core;
+                core.set_property(ov::enable_profiling(false));
 
-            auto compiled_model = core.compile_model(model, "NPU");
-            auto nireq = compiled_model.get_property(ov::optimal_number_of_infer_requests);
+                auto compiled_model = core.compile_model(model, "NPU");
+                auto nireq = compiled_model.get_property(ov::optimal_number_of_infer_requests);
 
-            std::cout << "InferRequest nireq: " << nireq << std::endl;
-            int count = nireq;
+                std::cout << "InferRequest nireq: " << nireq << std::endl;
+                int count = nireq;
 
-            std::vector<ov::InferRequest> inferReqsQueue;
-            while (count--) {
-                ov::InferRequest req = compiled_model.create_infer_request();
-                for (const auto& input : inputs) {
-                    req.set_tensor(input.first, input.second);
+                std::vector<ov::InferRequest> inferReqsQueue;
+                while (count--) {
+                    ov::InferRequest req = compiled_model.create_infer_request();
+                    for (const auto& input : inputs) {
+                        req.set_tensor(input.first, input.second);
+                    }
+                    inferReqsQueue.push_back(req);
                 }
-                inferReqsQueue.push_back(req);
-            }
-            for (auto& req : inferReqsQueue) {
-                auto value = counter++;
-                std::cout << "inferReq start_async value " << value <<  std::endl;
-                req.start_async();
-            }
-            for (auto& req : inferReqsQueue) {
-                std::cout << "inferReq waiting" << std::endl;
-                req.wait();
-                std::cout << "inferReq done" << std::endl;
+                for (auto& req : inferReqsQueue) {
+                    auto value = counter++;
+                    std::cout << "inferReq start_async value " << value <<  std::endl;
+                    req.start_async();
+                }
+                for (auto& req : inferReqsQueue) {
+                    std::cout << "inferReq waiting" << std::endl;
+                    req.wait();
+                    std::cout << "inferReq done" << std::endl;
+                }
             }});
     }
     for (auto& thread : threads) {
