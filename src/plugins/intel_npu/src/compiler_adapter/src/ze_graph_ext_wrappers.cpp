@@ -475,6 +475,32 @@ void ZeGraphExtWrappers::getMetadata(ze_graph_handle_t graphHandle,
 }
 
 NetworkMetadata ZeGraphExtWrappers::getNetworkMeta(ze_graph_handle_t graphHandle) const {
+    std::cout << "===================================\n getNetworkMeta pfnGetProperties3\n";
+    ze_graph_properties_3_t properties3 = {};
+    properties3.stype = ZE_STRUCTURE_TYPE_GRAPH_PROPERTIES;
+    _logger.debug("getNetworkMeta initializeGraph - perform pfnGetProperties3");
+    _zeroInitStruct->getGraphDdiTable().pfnGetProperties3(graphHandle, &properties3);
+    std::cout << "===========getNetworkMeta properties3.flags: " << properties3.flags << "\n";
+
+    switch (properties3.flags){
+        case ZE_GRAPH_PROPERTIES_FLAG_LOADED_FROM_CACHE:
+            std::cout << "===========getNetworkMeta properties3.flags: ZE_GRAPH_PROPERTIES_FLAG_LOADED_FROM_CACHE\n";
+            break;
+        case ZE_GRAPH_PROPERTIES_FLAG_COMPILED:
+            std::cout << "===========getNetworkMeta properties3.flags: ZE_GRAPH_PROPERTIES_FLAG_COMPILED\n";
+            break;
+        case ZE_GRAPH_PROPERTIES_FLAG_PRE_COMPILED:
+            std::cout << "===========getNetworkMeta properties3.flags: ZE_GRAPH_PROPERTIES_FLAG_PRE_COMPILED\n";
+            break;
+        case ZE_GRAPH_PROPERTIES_FLAG_FORCE_UINT32:
+            std::cout << "===========getNetworkMeta properties3.flags: ZE_GRAPH_PROPERTIES_FLAG_FORCE_UINT32\n";
+            break;
+        default:
+            std::cout << "===========getNetworkMeta properties3.flags: default\n";
+            break;
+        }
+    std::cout << "===================================\n";
+
     ze_graph_properties_t graphProperties = {};
     graphProperties.stype = ZE_STRUCTURE_TYPE_GRAPH_PROPERTIES;
 
