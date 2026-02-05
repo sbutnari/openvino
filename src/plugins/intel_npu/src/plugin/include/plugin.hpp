@@ -37,6 +37,8 @@ public:
 
     ov::Any get_property(const std::string& name, const ov::AnyMap& arguments) const override;
 
+    template <typename OPT_TYPE> void registerOptionFuncCustom(OPT_TYPE);
+
     std::shared_ptr<ov::ICompiledModel> compile_model(const std::shared_ptr<const ov::Model>& model,
                                                       const ov::AnyMap& properties) const override;
 

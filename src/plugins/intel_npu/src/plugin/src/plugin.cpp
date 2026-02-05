@@ -274,17 +274,26 @@ Plugin::Plugin()
     _properties->registerProperties();
 }
 
+template <typename OPT_TYPE> void Plugin::registerOptionFuncCustom(OPT_TYPE x) {
+        auto dummyopt = details::makeOptionModel<OPT_TYPE>();
+        std::string o_name = dummyopt.key().data();
+        _options->add<OPT_TYPE>();
+        _globalConfig.enable(std::move(o_name), false);
+    }
+
+#define REGISTER_OPTION(OPT_TYPE) registerOptionFuncCustom<OPT_TYPE>(OPT_TYPE{});
+
 void Plugin::init_options() {
     // Initialize (note: it will reset registered options)
     _options->reset();
 
-#define REGISTER_OPTION(OPT_TYPE)                             \
-    do {                                                      \
-        auto dummyopt = details::makeOptionModel<OPT_TYPE>(); \
-        std::string o_name = dummyopt.key().data();           \
-        _options->add<OPT_TYPE>();                            \
-        _globalConfig.enable(std::move(o_name), false);       \
-    } while (0)
+// #define REGISTER_OPTION(OPT_TYPE)                             \
+//     do {                                                      \
+//         auto dummyopt = details::makeOptionModel<OPT_TYPE>(); \
+//         std::string o_name = dummyopt.key().data();           \
+//         _options->add<OPT_TYPE>();                            \
+//         _globalConfig.enable(std::move(o_name), false);       \
+//     } while (0)
 
     REGISTER_OPTION(LOG_LEVEL);
     REGISTER_OPTION(CACHE_DIR);
