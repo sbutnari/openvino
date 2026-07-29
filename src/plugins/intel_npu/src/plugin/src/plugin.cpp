@@ -214,17 +214,27 @@ std::shared_ptr<const ov::Model> get_model_ptr_from_map(ov::AnyMap& properties) 
     return nullptr;
 }
 
+template <typename OPT_TYPE>
+void registerOptionFuncCustom(OptionsDesc& options, FilteredConfig& config) {
+    auto dummyopt = details::makeOptionModel<OPT_TYPE>();
+    std::string o_name = dummyopt.key().data();
+    options.add<OPT_TYPE>();
+    config.enable(std::move(o_name), false);
+}
+
+#define REGISTER_OPTION(OPT_TYPE) registerOptionFuncCustom<OPT_TYPE>(options, config);
+
 void init_config(const IEngineBackend* backend, OptionsDesc& options, FilteredConfig& config) {
     // Initialize (note: it will reset registered options)
     options.reset();
 
-#define REGISTER_OPTION(OPT_TYPE)                             \
-    do {                                                      \
-        auto dummyopt = details::makeOptionModel<OPT_TYPE>(); \
-        std::string o_name = dummyopt.key().data();           \
-        options.add<OPT_TYPE>();                              \
-        config.enable(std::move(o_name), false);              \
-    } while (0)
+// #define REGISTER_OPTION(OPT_TYPE)                             \
+//     do {                                                      \
+//         auto dummyopt = details::makeOptionModel<OPT_TYPE>(); \
+//         std::string o_name = dummyopt.key().data();           \
+//         options.add<OPT_TYPE>();                              \
+//         config.enable(std::move(o_name), false);              \
+//     } while (0)
 
     REGISTER_OPTION(LOG_LEVEL);
     REGISTER_OPTION(CACHE_DIR);
