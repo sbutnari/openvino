@@ -18,6 +18,21 @@
 #include "transformations/rt_info/decompression.hpp"
 #include "transformations/rt_info/dequantization_node.hpp"
 
+namespace {
+// clang-format off
+#include "windows.h"
+#include "psapi.h"
+// clang-format on
+
+void printMemoryValue() {  // Note: this value is in KB!
+    PROCESS_MEMORY_COUNTERS_EX2 pmc;
+    GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc));
+    std::cout << "PrivateUsage: " << pmc.PrivateUsage / 1024 << " WorkingSetSize: " << pmc.WorkingSetSize / 1024
+              << " PrivateWorkingSetSize: " << pmc.PrivateWorkingSetSize / 1024 << "KB" << std::endl;
+}
+
+}  // namespace
+
 /**
  * \brief Check if \ref ov::Output<ov::Node> can be folded base on `can_be_folded` attribute.
  *
