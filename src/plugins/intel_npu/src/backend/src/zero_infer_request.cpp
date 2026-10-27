@@ -64,6 +64,24 @@ void copy_tensor_with_optional_shape_view(const std::shared_ptr<ov::ITensor>& sr
     srcTensor->copy_to(dstTensor);
 }
 
+void check_element_type(const ov::element::Type& port_element_type, const ov::element::Type& tensor_element_type) {
+    if ((port_element_type == ov::element::Type_t::boolean || tensor_element_type == ov::element::Type_t::boolean) &&
+        port_element_type != tensor_element_type) {
+        // Exception case for boolean treated as u8 in the NPU driver
+        OPENVINO_ASSERT(port_element_type == ov::element::Type_t::u8 || tensor_element_type == ov::element::Type_t::u8,
+                        "The tensor element type is not corresponding with output element type (",
+                        tensor_element_type,
+                        " != ",
+                        port_element_type);
+    } else {
+        OPENVINO_ASSERT(port_element_type == tensor_element_type,
+                        "The tensor element type is not corresponding with output element type (",
+                        tensor_element_type,
+                        " != ",
+                        port_element_type);
+    }
+}
+
 }  // namespace
 
 namespace intel_npu {
@@ -1034,7 +1052,17 @@ void ZeroInferRequest::prepare_inputs() {
                     "context or must be in a continued memory space, copy into L0 with size: %zu",
                     inputIndex,
                     levelZeroTensor->get_byte_size());
-                size_t copied_bytes_from_user = 0;
+                size_t bytes_to_copy_from_user = 0;
+                for (const auto& tensor : userTensor) {
+                    bytes_to_copy_from_user += tensor->get_byte_size();
+                }
+                OPENVINO_ASSERT(levelZeroTensor->get_byte_size() == bytes_to_copy_from_user,
+                                "Total byte size of the batched user tensors (",
+                                bytes_to_copy_from_user,
+                                ") must be equal to the Level Zero tensor byte size (",
+                                levelZeroTensor->get_byte_size(),
+                                ")");
+
                 for (size_t i = 0; i < userTensor.size(); i++) {
                     auto viewTensor = ov::make_tensor(
                         levelZeroTensor->get_element_type(),
@@ -1042,10 +1070,7 @@ void ZeroInferRequest::prepare_inputs() {
                         static_cast<unsigned char*>(levelZeroTensor->data()) + (i * userTensor.at(i)->get_byte_size()));
 
                     userTensor.at(i)->copy_to(viewTensor);
-                    copied_bytes_from_user += userTensor.at(i)->get_byte_size();
                 }
-                OPENVINO_ASSERT(levelZeroTensor->get_byte_size() == copied_bytes_from_user,
-                                "Bytes copied must be equal");
             }
 
             ++inputIndex;
@@ -1185,24 +1210,7 @@ void ZeroInferRequest::check_tensor(const ov::Output<const ov::Node>& port,
             "  2. Enable stride support using the 'enable_strides_for' configuration property if this is supported.");
     }
 
-    const auto& port_element_type = port.get_element_type();
-    const auto& tensor_element_type = tensor->get_element_type();
-
-    if ((port_element_type == ov::element::Type_t::boolean || tensor_element_type == ov::element::Type_t::boolean) &&
-        port_element_type != tensor_element_type) {
-        // Exception case for boolean treated as u8 in the NPU driver
-        OPENVINO_ASSERT(port_element_type == ov::element::Type_t::u8 || tensor_element_type == ov::element::Type_t::u8,
-                        "The tensor element type is not corresponding with output element type (",
-                        tensor_element_type,
-                        " != ",
-                        port_element_type);
-    } else {
-        OPENVINO_ASSERT(port_element_type == tensor_element_type,
-                        "The tensor element type is not corresponding with output element type (",
-                        tensor_element_type,
-                        " != ",
-                        port_element_type);
-    }
+    check_element_type(port.get_element_type(), tensor->get_element_type());
 
     const auto& port_partial_shape = port.get_partial_shape();
     const auto& tensor_shape = tensor->get_shape();
@@ -1286,6 +1294,11 @@ void ZeroInferRequest::check_batched_tensors(const ov::Output<const ov::Node>& p
                     " != 0");
     std::for_each(tensors.begin(), tensors.end(), [&batch_idx](const ov::SoPtr<ov::ITensor>& item) {
         OPENVINO_ASSERT(item, "Uninitialized tensor is provided!");
+        OPENVINO_ASSERT(static_cast<int64_t>(item->get_shape().size()) > batch_idx,
+                        "set_input_tensors/set_tensors error. Tensor with shape ",
+                        item->get_shape(),
+                        " has no batch dimension at index ",
+                        batch_idx);
         OPENVINO_ASSERT(item->get_shape()[batch_idx] == 1,
                         "set_input_tensors/set_tensors. Tensors shall represent one item in a batch, ",
                         item->get_shape()[batch_idx],
@@ -1336,6 +1349,15 @@ void ZeroInferRequest::check_batched_tensors(const ov::Output<const ov::Node>& p
                 "supported.");
         }
     }
+
+    // The tensors are consistent with each other; they must also match the port, otherwise the Level Zero buffers
+    // (sized from the compiled model) and the user buffers disagree in size.
+    check_element_type(port.get_element_type(), element_type);
+    OPENVINO_ASSERT(port.get_partial_shape().compatible(ov::PartialShape(batched_shape)),
+                    "set_input_tensors/set_tensors error. Batched tensor shape ",
+                    batched_shape,
+                    " is not compatible with the model input shape ",
+                    port.get_partial_shape());
 }
 
 void ZeroInferRequest::check_tensors() const {
