@@ -1354,6 +1354,71 @@ TEST_P(BatchedTensorsRunFailureTests, FailedToDetectBatch) {
     EXPECT_THROW(auto execNet = core->compile_model(model, target_device, configuration);, std::exception);
 }
 
+TEST_P(BatchedTensorsRunFailureTests, SetInputTensorsNotMatchingModelShapeOrType) {
+    SKIP_IF_CURRENT_TEST_IS_DISABLED();
+
+    size_t batch = 4;
+    auto batch_shape = Shape{batch, 2, 2, 2};
+    auto model = BatchedTensorsRunTests::create_n_inputs(1, element::f32, batch_shape, "N...");
+    auto execNet = core->compile_model(model, target_device, configuration);
+    ov::InferRequest req = execNet.create_infer_request();
+
+    auto make_tensors = [&](element::Type type, const Shape& shape) {
+        std::vector<ov::Tensor> tensors;
+        for (size_t i = 0; i < batch; ++i) {
+            tensors.emplace_back(type, shape);
+        }
+        return tensors;
+    };
+
+    // Non-batch dimension larger than the model's: would overflow the Level Zero buffer
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(element::f32, {1, 2, 2, 3})), ov::Exception);
+    // Non-batch dimension smaller than the model's: the device would read past the user buffer
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(element::f32, {1, 2, 2, 1})), ov::Exception);
+    // Rank mismatch
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(element::f32, {1, 2, 2, 2, 2})), ov::Exception);
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(element::f32, {1, 2, 2})), ov::Exception);
+    // Scalar tensors have no batch dimension
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(element::f32, {})), ov::Exception);
+    // Element type mismatch
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(element::f16, {1, 2, 2, 2})), ov::Exception);
+
+    // Valid tensors are accepted, but reshaping all of them after set_tensors must be caught before inference
+    auto tensors = make_tensors(element::f32, {1, 2, 2, 2});
+    OV_ASSERT_NO_THROW(req.set_tensors("tensor_input0", tensors));
+    for (auto& tensor : tensors) {
+        tensor.set_shape({1, 2, 2, 3});
+    }
+    EXPECT_THROW(req.infer(), ov::Exception);
+}
+
+TEST_P(BatchedTensorsRunFailureTests, SetInputTensorsNotMatchingDynamicModelShape) {
+    SKIP_IF_CURRENT_TEST_IS_DISABLED();
+
+    size_t model_batch_upper_bound = 10;
+    auto modelShape = PartialShape{ov::Dimension(1, model_batch_upper_bound), 2, 2, 2};
+    auto model = BatchedTensorsRunTests::create_n_inputs(1, element::f32, modelShape, "N...");
+    auto execNet = core->compile_model(model, target_device, configuration);
+    ov::InferRequest req = execNet.create_infer_request();
+
+    auto make_tensors = [](size_t count, const Shape& shape) {
+        std::vector<ov::Tensor> tensors;
+        for (size_t i = 0; i < count; ++i) {
+            tensors.emplace_back(element::f32, shape);
+        }
+        return tensors;
+    };
+
+    // More tensors than the batch upper bound
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(model_batch_upper_bound + 1, {1, 2, 2, 2})),
+                 ov::Exception);
+    // Batch within bounds but non-batch dimension not matching the model
+    EXPECT_THROW(req.set_tensors("tensor_input0", make_tensors(4, {1, 2, 2, 3})), ov::Exception);
+
+    OV_ASSERT_NO_THROW(req.set_tensors("tensor_input0", make_tensors(4, {1, 2, 2, 2})));
+    OV_ASSERT_NO_THROW(req.infer());
+}
+
 }  // namespace behavior
 }  // namespace test
 }  // namespace ov
