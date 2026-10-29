@@ -1286,6 +1286,11 @@ void ZeroInferRequest::check_batched_tensors(const ov::Output<const ov::Node>& p
                     " != 0");
     std::for_each(tensors.begin(), tensors.end(), [&batch_idx](const ov::SoPtr<ov::ITensor>& item) {
         OPENVINO_ASSERT(item, "Uninitialized tensor is provided!");
+        OPENVINO_ASSERT(static_cast<int64_t>(item->get_shape().size()) > batch_idx,
+                        "set_input_tensors/set_tensors error. Tensor with shape ",
+                        item->get_shape(),
+                        " has no batch dimension at index ",
+                        batch_idx);
         OPENVINO_ASSERT(item->get_shape()[batch_idx] == 1,
                         "set_input_tensors/set_tensors. Tensors shall represent one item in a batch, ",
                         item->get_shape()[batch_idx],
