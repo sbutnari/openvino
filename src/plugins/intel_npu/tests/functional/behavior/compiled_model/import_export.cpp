@@ -8,10 +8,15 @@
 #include <openvino/runtime/intel_npu/properties.hpp>
 #include <sstream>
 
+#include "blob_source.hpp"
 #include "common/npu_test_env_cfg.hpp"
 #include "common/utils.hpp"
 #include "common_test_utils/subgraph_builders/conv_pool_relu.hpp"
 #include "intel_npu/npu_private_properties.hpp"
+#include "metadata.hpp"
+#include "openvino/op/assign.hpp"
+#include "openvino/op/read_value.hpp"
+#include "openvino/op/reduce_sum.hpp"
 #include "openvino/opsets/opset6.hpp"
 #include "openvino/runtime/make_tensor.hpp"
 #include "openvino/util/codec_xor.hpp"
@@ -110,6 +115,63 @@ inline std::shared_ptr<ov::Model> createCustomNetModel(bool dynamicBatch = false
     model = preProc.build();
 
     return model;
+}
+
+/**
+ * @brief Stateful model with a regular [1, 3] input/output and a rank-0 (scalar) state variable.
+ * @details Stateful models are never batched by the plugin, so the exported metadata carries no batch value.
+ */
+inline std::shared_ptr<ov::Model> createModelWithScalarState() {
+    auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{1, 3});
+    input->set_friendly_name("input");
+    input->get_output_tensor(0).set_names({"input"});
+
+    auto stateInit = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, {0.0f});
+    auto readValue = std::make_shared<ov::op::v3::ReadValue>(stateInit, "scalar_state");
+
+    auto axes = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{2}, {0, 1});
+    auto sum = std::make_shared<ov::op::v1::ReduceSum>(input, axes, false);
+    auto newState = std::make_shared<ov::op::v1::Add>(readValue, sum);
+    auto assign = std::make_shared<ov::op::v3::Assign>(newState, "scalar_state");
+
+    auto add = std::make_shared<ov::op::v1::Add>(input, readValue);
+    auto result = std::make_shared<ov::op::v0::Result>(add);
+    result->set_friendly_name("output");
+    result->get_output_tensor(0).set_names({"output"});
+
+    return std::make_shared<ov::Model>(ov::ResultVector{result},
+                                       ov::SinkVector{assign},
+                                       ov::ParameterVector{input},
+                                       "ScalarState");
+}
+
+/**
+ * @brief Replaces the batch size stored in the metadata of an exported NPU blob, keeping every other field.
+ * @details The metadata is a plain trailer without any integrity protection, so this is all an attacker needs.
+ */
+inline std::string rewriteBlobBatchSize(const std::string& blob, const int64_t batchSize) {
+    std::istringstream blobStream(blob);
+    ::intel_npu::BlobSource blobSource(blobStream);
+    const std::unique_ptr<::intel_npu::MetadataBase> storedMetadata = ::intel_npu::read_metadata_from(blobSource);
+    OPENVINO_ASSERT(storedMetadata != nullptr, "The exported blob has no metadata");
+    OPENVINO_ASSERT(!storedMetadata->is_encrypted_blob().value_or(false), "Encrypted blobs are not handled");
+
+    std::ostringstream tamperedBlob;
+    tamperedBlob.write(blob.data(), static_cast<std::streamsize>(storedMetadata->get_compiler_payload_size()));
+    ::intel_npu::Metadata<::intel_npu::CURRENT_METADATA_VERSION>(
+        storedMetadata->get_compiler_payload_size(),
+        ::intel_npu::CURRENT_OPENVINO_VERSION,
+        storedMetadata->get_init_sizes(),
+        batchSize,
+        storedMetadata->get_input_layouts(),
+        storedMetadata->get_output_layouts(),
+        storedMetadata->get_compiler_version(),
+        std::nullopt,
+        storedMetadata->get_compatibility_descriptor(),
+        storedMetadata->get_blob_type().value_or(::intel_npu::BlobType::ELF))
+        .write(tamperedBlob);
+
+    return tamperedBlob.str();
 }
 
 using OVCompiledGraphImportExportTestNPU = OVCompiledGraphImportExportTest;
@@ -376,6 +438,67 @@ TEST_P(OVCompiledGraphImportExportTestNPU, DifferentSizesOfEncryptedVsDecryptedB
     ov::Tensor encrypted_blob_tensor(ov::element::u8, ov::Shape{encrypted_blob_str.size()}, encrypted_blob_str.c_str());
     OV_ASSERT_NO_THROW(core.import_model(encrypted_blob_stream, target_device, configuration));
     OV_ASSERT_NO_THROW(core.import_model(encrypted_blob_tensor, target_device, configuration));
+}
+
+/**
+ * @brief A blob whose metadata was tampered with to request plugin batching must not crash the process when the
+ * compiled schedule contains a rank-0 I/O descriptor.
+ * @details The batch size read from the blob metadata is trusted at import: nothing checks it against the I/O
+ * descriptors, and "Graph::determine_batch_size()" (the only place validating that every descriptor has a batch axis)
+ * is never reached. Rewriting the batch of a legitimately compiled stateful model to -1 (dynamic) makes the dummy model
+ * dynamic on axis 0 while the scalar state descriptor is left untouched. Changing the batch through "set_tensor" then
+ * makes "setup_pipeline()" read "get_shape()[BATCH_AXIS]" of the rank-0 state tensor; "ov::Shape::operator[]" is not
+ * bounds-checked, so this indexes an empty vector.
+ *
+ * Throwing an ov::Exception (at import or inference) is the expected safe outcome.
+ */
+TEST_P(OVCompiledGraphImportExportTestNPU, TamperedBatchMetadataWithScalarStateDoesNotCrash) {
+    ov::Core core;
+    std::stringstream blobStream;
+    {
+        auto compiledModel = core.compile_model(createModelWithScalarState(), target_device, configuration);
+
+        auto states = compiledModel.create_infer_request().query_state();
+        ASSERT_EQ(states.size(), 1u);
+        if (!states.at(0).get_state().get_shape().empty()) {
+            GTEST_SKIP() << "The compiler did not keep the state as rank-0, got shape "
+                         << states.at(0).get_state().get_shape();
+        }
+
+        compiledModel.export_model(blobStream);
+    }
+
+    const std::string blob = blobStream.str();
+    {
+        std::istringstream stream(blob);
+        ::intel_npu::BlobSource blobSource(stream);
+        ASSERT_FALSE(::intel_npu::read_metadata_from(blobSource)->get_batch_size().has_value())
+            << "Stateful models are not expected to be batched by the plugin";
+    }
+    const std::string tamperedBlob = rewriteBlobBatchSize(blob, -1);
+
+    const std::string originalDeathTestStyle = ::testing::GTEST_FLAG(death_test_style);
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+
+    EXPECT_EXIT(
+        {
+            try {
+                std::istringstream tamperedStream(tamperedBlob);
+                auto importedModel = core.import_model(tamperedStream, target_device, configuration);
+                auto request = importedModel.create_infer_request();
+
+                // The first batch value is accepted as is, the second one flags "_dynamicBatchValueChanged"
+                request.set_tensor(importedModel.input(), ov::Tensor(ov::element::f32, ov::Shape{2, 3}));
+                request.set_tensor(importedModel.input(), ov::Tensor(ov::element::f32, ov::Shape{3, 3}));
+                request.infer();
+            } catch (const ov::Exception&) {
+            }
+            exit(0);
+        },
+        testing::ExitedWithCode(0),
+        "");
+
+    ::testing::GTEST_FLAG(death_test_style) = originalDeathTestStyle;
 }
 
 }  // namespace behavior
